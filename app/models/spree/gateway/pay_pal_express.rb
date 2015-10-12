@@ -1,4 +1,6 @@
 require 'paypal-sdk-merchant'
+require 'active_merchant'
+
 module Spree
   class Gateway::PayPalExpress < Gateway
     preference :login, :string
@@ -34,6 +36,31 @@ module Spree
       'paypal'
     end
 
+    def void(response_code, gateway_options={})
+      
+      payment = Spree::Payment.find_by_response_code(response_code)
+      amount = payment.amount
+      
+      # Process the refund
+      refund_response = refund(payment, amount)
+
+      if refund_response.success?
+        # Don't overwrite it with the RefundTransactionID
+        ActiveMerchant::Billing::Response.new(true, "", {}, {:authorization => response_code})
+      else
+        class << refund_response
+          def to_s
+            errors.map(&:long_message).join(" ")
+          end
+        end
+        refund_response
+      end
+    end
+
+    def cancel(response_code)
+      void(response_code, {})
+    end
+
     def purchase(amount, express_checkout, gateway_options={})
       pp_details_request = provider.build_get_express_checkout_details({
         :Token => express_checkout.token
@@ -55,11 +82,10 @@ module Spree
         # This is mainly so we can use it later on to refund the payment if the user wishes.
         transaction_id = pp_response.do_express_checkout_payment_response_details.payment_info.first.transaction_id
         express_checkout.update_column(:transaction_id, transaction_id)
-        # This is rather hackish, required for payment/processing handle_response code.
-        Class.new do
-          def success?; true; end
-          def authorization; nil; end
-        end.new
+
+        #So we can fetch the payment for this transaction for cancel and void
+        ActiveMerchant::Billing::Response.new(true, "", {}, {:authorization => transaction_id})
+
       else
         class << pp_response
           def to_s
